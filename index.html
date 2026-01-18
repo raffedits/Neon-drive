@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Neon Drive</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;900&display=swap');
+        body { margin: 0; overflow: hidden; background: #050010; font-family: 'Orbitron', sans-serif; touch-action: none; user-select: none; }
+        canvas { display: block; }
+        #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none; color: white; }
+        .screen { position: absolute; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: flex; flex-direction: column; justify-content: center; align-items: center; pointer-events: all; }
+        .hidden { display: none !important; }
+        h1 { font-size: 2.5rem; color: #00f2ff; text-shadow: 0 0 15px #00f2ff; margin: 0 0 20px 0; }
+        button { background: #111; border: 2px solid #00f2ff; color: #00f2ff; padding: 12px; font-size: 1rem; font-family: 'Orbitron'; cursor: pointer; margin: 8px; width: 220px; border-radius: 5px; }
+        button:active { background: #00f2ff; color: #000; }
+        #hud { position: absolute; top: 20px; width: 100%; display: none; justify-content: space-around; font-size: 1.2rem; }
+        #garage-container { width: 100%; height: 40vh; position: relative; }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <div id="hud">
+        <div id="score-txt">0m</div>
+        <div id="coins-txt">💰 0</div>
+    </div>
+
+    <div id="menu-screen" class="screen">
+        <h1>NEON DRIVE</h1>
+        <p id="best-txt">RECORD: 0m</p>
+        <p id="total-coins-txt" style="color:gold">MONETE: 0</p>
+        <button onclick="startGame()">GIOCA</button>
+        <button onclick="showShop()">GARAGE</button>
+    </div>
+
+    <div id="shop-screen" class="screen hidden">
+        <h1>GARAGE</h1>
+        <div id="garage-container"></div>
+        <h2 id="car-name-txt">AUTO</h2>
+        <div style="display:flex">
+            <button style="width:50px" onclick="changeCar(-1)"><</button>
+            <button id="buy-select-btn" onclick="handleBuySelect()" style="width:120px">SELECT</button>
+            <button style="width:50px" onclick="changeCar(1)">></button>
+        </div>
+        <p id="car-price-txt" style="color:gold"></p>
+        <button onclick="showMenu()" style="border-color:#ff0055; color:#ff0055; width:120px">BACK</button>
+    </div>
+
+    <div id="game-over-screen" class="screen hidden">
+        <h1 style="color:#ff0055">BOOM!</h1>
+        <p id="final-stats-txt"></p>
+        <button onclick="startGame()">RIPROVA</button>
+        <button onclick="showMenu()">MENU</button>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script>
+    // DATI CON LE 4 NUOVE AUTO
+    const carsData = [
+        { name: "NEON R1", color: 0x00f2ff, price: 0 },
+        { name: "RUBY", color: 0xff0055, price: 100 },
+        { name: "GOLD", color: 0xffcc00, price: 300 },
+        { name: "EMERALD", color: 0x00ff88, price: 600 },
+        { name: "PHANTOM", color: 0x9d00ff, price: 1200 },
+        { name: "INFERNO", color: 0xff4400, price: 2500 },
+        { name: "ULTRA", color: 0xffffff, price: 5000 }
+    ];
+
+    let selectedIdx = parseInt(localStorage.getItem('carIdx')) || 0;
+    let currentIdx = selectedIdx;
+    let totalCoins = parseInt(localStorage.getItem('coins')) || 0;
+    let bestScore = parseInt(localStorage.getItem('best')) || 0;
+    let ownedCars = JSON.parse(localStorage.getItem('owned')) || [0];
+
+    // MOTORE
+    let scene, camera, renderer, player;
+    let shopScene, shopCamera, shopRenderer, shopCar;
+    let gameActive = false, score = 0, sessionCoins = 0, speed = 0.5;
+    let obstacles = [], coins = [], roadLines = [], buildings = [];
+    let targetX = 0;
+
+    window.onload = () => {
+        initGame();
+        initShop();
+        updateUI();
+        animate();
+    };
+
+    function initGame() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x050010);
+        
+        camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 5, 12);
+        camera.lookAt(0, 1, 0);
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        const light = new THREE.AmbientLight(0xffffff, 1.2);
+        scene.add(light);
+
+        const road = new THREE.Mesh(new THREE.PlaneGeometry(14, 1000), new THREE.MeshBasicMaterial({color: 0x111111}));
+        road.rotation.x = -Math.PI / 2;
+        scene.add(road);
+
+        const grassL = new THREE.Mesh(new THREE.PlaneGeometry(100, 1000), new THREE.MeshBasicMaterial({color: 0x003311}));
+        grassL.rotation.x = -Math.PI/2; grassL.position.set(-57, -0.1, 0);
+        const grassR = grassL.clone(); grassR.position.x = 57;
+        scene.add(grassL, grassR);
+
+        for(let i=0; i<20; i++) {
+            const l = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 4), new THREE.MeshBasicMaterial({color: 0x00f2ff}));
+            l.rotation.x = -Math.PI/2;
+            l.position.set(0, 0.05, i * -15);
+            scene.add(l);
+            roadLines.push(l);
+            spawnBuilding(i * -20);
+        }
+
+        updatePlayerModel();
+
+        window.addEventListener('pointermove', (e) => {
+            if(!gameActive) return;
+            targetX = ((e.clientX / window.innerWidth) * 2 - 1) * 6;
+        });
+    }
+
+    function createCar(color) {
+        const group = new THREE.Group();
+        const body = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.6, 3.5), new THREE.MeshBasicMaterial({color: color}));
+        body.position.y = 0.6;
+        group.add(body);
+        
+        const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.5, 1.5), new THREE.MeshBasicMaterial({color: 0x000000}));
+        cabin.position.set(0, 1.1, 0.3);
+        group.add(cabin);
+
+        const wing = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.1, 0.6), new THREE.MeshBasicMaterial({color: color}));
+        wing.position.set(0, 1.1, 1.5);
+        group.add(wing);
+
+        const wheelGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.4, 8);
+        const wheelMat = new THREE.MeshBasicMaterial({color: 0x222222});
+        const wPos = [[0.9, 0.4, 1.1], [-0.9, 0.4, 1.1], [0.9, 0.4, -1.1], [-0.9, 0.4, -1.1]];
+        wPos.forEach(p => {
+            const w = new THREE.Mesh(wheelGeo, wheelMat);
+            w.rotation.z = Math.PI/2; w.position.set(p[0], p[1], p[2]);
+            group.add(w);
+        });
+
+        const tail = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.2, 0.1), new THREE.MeshBasicMaterial({color: 0xff0000}));
+        tail.position.set(0.6, 0.6, 1.76); group.add(tail);
+        const tail2 = tail.clone(); tail2.position.x = -0.6; group.add(tail2);
+
+        return group;
+    }
+
+    function spawnBuilding(z) {
+        const h = 10 + Math.random() * 20;
+        const b = new THREE.Mesh(new THREE.BoxGeometry(5, h, 5), new THREE.MeshBasicMaterial({color: 0x050505}));
+        const side = Math.random() > 0.5 ? 14 : -14;
+        b.position.set(side, h/2, z);
+        const frame = new THREE.Mesh(new THREE.BoxGeometry(5.1, h, 5.1), new THREE.MeshBasicMaterial({color: 0x00f2ff, wireframe: true}));
+        b.add(frame);
+        scene.add(b);
+        buildings.push(b);
+    }
+
+    window.startGame = () => {
+        gameActive = true; score = 0; speed = 0.5; sessionCoins = 0;
+        obstacles.forEach(o => scene.remove(o)); obstacles = [];
+        coins.forEach(c => scene.remove(c)); coins = [];
+        document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+        document.getElementById('hud').style.display = 'flex';
+        document.getElementById('coins-txt').innerText = "💰 0";
+    };
+
+    window.showShop = () => {
+        document.getElementById('menu-screen').classList.add('hidden');
+        document.getElementById('shop-screen').classList.remove('hidden');
+        updateShopUI();
+    };
+
+    window.showMenu = () => {
+        document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+        document.getElementById('menu-screen').classList.remove('hidden');
+        document.getElementById('hud').style.display = 'none';
+        updateUI();
+    };
+
+    window.changeCar = (dir) => {
+        currentIdx = (currentIdx + dir + carsData.length) % carsData.length;
+        updateShopUI();
+    };
+
+    window.handleBuySelect = () => {
+        if(ownedCars.includes(currentIdx)) {
+            selectedIdx = currentIdx;
+            localStorage.setItem('carIdx', selectedIdx);
+            updatePlayerModel();
+        } else if(totalCoins >= carsData[currentIdx].price) {
+            totalCoins -= carsData[currentIdx].price;
+            ownedCars.push(currentIdx);
+            localStorage.setItem('coins', totalCoins);
+            localStorage.setItem('owned', JSON.stringify(ownedCars));
+        }
+        updateShopUI(); updateUI();
+    };
+
+    function updatePlayerModel() {
+        if(player) scene.remove(player);
+        player = createCar(carsData[selectedIdx].color);
+        scene.add(player);
+    }
+
+    function initShop() {
+        shopScene = new THREE.Scene();
+        shopCamera = new THREE.PerspectiveCamera(45, window.innerWidth / (window.innerHeight*0.4), 0.1, 100);
+        shopCamera.position.set(5, 3, 8); shopCamera.lookAt(0, 1, 0);
+        shopRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        shopRenderer.setSize(window.innerWidth, window.innerHeight * 0.4);
+        document.getElementById('garage-container').appendChild(shopRenderer.domElement);
+        shopScene.add(new THREE.AmbientLight(0xffffff, 2.0));
+    }
+
+    function updateShopUI() {
+        if(shopCar) shopScene.remove(shopCar);
+        shopCar = createCar(carsData[currentIdx].color);
+        shopScene.add(shopCar);
+        document.getElementById('car-name-txt').innerText = carsData[currentIdx].name;
+        const owned = ownedCars.includes(currentIdx);
+        document.getElementById('car-price-txt').innerText = owned ? "OWNED" : "COST: 💰" + carsData[currentIdx].price;
+        document.getElementById('buy-select-btn').innerText = owned ? (selectedIdx == currentIdx ? "EQUIPPED" : "SELECT") : "BUY";
+    }
+
+    function updateUI() {
+        document.getElementById('best-txt').innerText = "RECORD: " + Math.floor(bestScore/10) + "m";
+        document.getElementById('total-coins-txt').innerText = "MONETE: " + totalCoins;
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        if(gameActive) {
+            score += 1; speed += 0.00002;
+            player.position.x = THREE.MathUtils.lerp(player.position.x, targetX, 0.1);
+
+            roadLines.forEach(l => { l.position.z += speed * 2; if(l.position.z > 15) l.position.z = -150; });
+            buildings.forEach(b => { b.position.z += speed * 1.5; if(b.position.z > 20) b.position.z = -200; });
+
+            if(Math.random() < 0.01) {
+                const enemy = createCar(0x444444);
+                enemy.position.set((Math.random()-0.5)*12, 0, -120);
+                scene.add(enemy); obstacles.push(enemy);
+            }
+
+            obstacles.forEach((o, i) => {
+                o.position.z += speed * 0.7;
+                if(o.position.distanceTo(player.position) < 2.2) {
+                    gameActive = false;
+                    if(score > bestScore) bestScore = score;
+                    localStorage.setItem('best', bestScore);
+                    document.getElementById('game-over-screen').classList.remove('hidden');
+                    document.getElementById('final-stats-txt').innerHTML = `METRI: ${Math.floor(score/10)}<br>COINS: 💰${sessionCoins}`;
+                }
+                if(o.position.z > 20) { scene.remove(o); obstacles.splice(i, 1); }
+            });
+
+            if(Math.random() < 0.02) {
+                const c = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 8), new THREE.MeshBasicMaterial({color: 0xffd700}));
+                c.position.set((Math.random()-0.5)*12, 1, -120);
+                scene.add(c); coins.push(c);
+            }
+            coins.forEach((c, i) => {
+                c.position.z += speed * 1.5;
+                if(c.position.distanceTo(player.position) < 1.8) {
+                    sessionCoins++; totalCoins++;
+                    localStorage.setItem('coins', totalCoins);
+                    document.getElementById('coins-txt').innerText = "💰 " + sessionCoins;
+                    scene.remove(c); coins.splice(i, 1);
+                }
+                if(c.position.z > 20) { scene.remove(c); coins.splice(i, 1); }
+            });
+            document.getElementById('score-txt').innerText = Math.floor(score/10) + "m";
+        }
+        if(shopCar) shopCar.rotation.y += 0.02; // Rotazione auto in garage
+        renderer.render(scene, camera);
+        if(!document.getElementById('shop-screen').classList.contains('hidden')) shopRenderer.render(shopScene, shopCamera);
+    }
+</script>
+</body>
+</html>
